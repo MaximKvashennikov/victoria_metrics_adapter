@@ -5,22 +5,20 @@ import requests
 from random import randint
 from datetime import datetime, timedelta
 from typing import List, Tuple, Union
-from common.helpers.helper import HELPER
-
-from adapters.carbon.model.victoria_metrics_model import MetricRoutesSecurity
+from src.config.settings import settings
+from src.helpers.retry_helper import RetryHelper
 
 
 class VictoriaMetricsClient:
-    prefix_query = '/prometheus/api/v1/series'
-    prefix_query_range = '/prometheus/api/v1/query_range'
-    prefix_export = '/api/v1/export'
-    prefix_import = '/api/v1/import'
-    prefix_delete = '/api/v1/admin/tsdb/delete_series'
+    SERIES = '/prometheus/api/v1/series'
+    QUERY_RANGE = '/prometheus/api/v1/query_range'
+    IMPORT = '/api/v1/import'
+    DELETE_SERIES = '/api/v1/admin/tsdb/delete_series'
 
-    def __init__(self, carbon, port=8428):
-        self.port = port
-        self.address = f'https://{carbon.address}:{self.port}'
-        self.auth = ('admin', 'P@ssw0rd')
+
+    def __init__(self):
+        self.address = settings.url
+        self.auth = (settings.vm_user, settings.vm_user)
         self.get = requests.get
         self.post = requests.post
 
@@ -33,7 +31,7 @@ class VictoriaMetricsClient:
         :return: None
         """
         response = self.post(
-            self.address + self.prefix_import,
+            self.address + self.IMPORT,
             data=json.dumps(data),
             auth=self.auth,
             verify=False,
@@ -54,7 +52,7 @@ class VictoriaMetricsClient:
         """
 
         response = self.post(
-            self.address + self.prefix_delete,
+            self.address + self.DELETE_SERIES,
             auth=self.auth,
             verify=False,
             params={'match[]': metrics}
@@ -65,10 +63,7 @@ class VictoriaMetricsClient:
         )
 
     @allure.step("Пполучить данные метрик VictoriaMetrics")
-    def victoria_get_metrics(
-        self,
-        metrics: list
-    ) -> dict:
+    def victoria_get_metrics(self, metrics: list) -> dict:
         """
         Возвращает информацию по метрикам без временного ряда.
 
@@ -77,7 +72,7 @@ class VictoriaMetricsClient:
         :return: dict
         """
         response_body = self.get(
-            self.address + self.prefix_query,
+            self.address + self.SERIES,
             auth=self.auth,
             verify=False,
             params={'match[]': metrics},
@@ -87,11 +82,11 @@ class VictoriaMetricsClient:
 
     @allure.step("Получение данных в заданном временном интервале из VictoriaMetrics")
     def get_metric_range_data(
-        self,
-        metrics: list,
-        step: int = 60,
-        start: datetime = datetime.now() - timedelta(minutes=60),
-        end: datetime = datetime.now()
+            self,
+            metrics: list,
+            step: int = 60,
+            start: datetime = datetime.now() - timedelta(minutes=60),
+            end: datetime = datetime.now()
     ) -> list:
         """
         Возвращает метрики и их значения в выбронном временном ряду
@@ -111,7 +106,7 @@ class VictoriaMetricsClient:
             'step': step
         }
         response = self.get(
-            self.address + self.prefix_query_range,
+            self.address + self.QUERY_RANGE,
             params=params,
             auth=self.auth,
             verify=False)
@@ -122,13 +117,13 @@ class VictoriaMetricsClient:
 
     @staticmethod
     def generate_timestamps_and_values(
-        start: datetime = datetime.now() - timedelta(minutes=60),
-        end: datetime = datetime.now(),
-        step: int = 60,
-        value: Union[int, float] = None,
-        min_value: int = 0,
-        max_value: int = 1000
-    ) -> Tuple[List[int], List[int]]:
+            start: datetime = datetime.now() - timedelta(minutes=60),
+            end: datetime = datetime.now(),
+            step: int = 60,
+            value: Union[int, float] = None,
+            min_value: int = 0,
+            max_value: int = 1000
+    ) -> Tuple[List[int], List[int | float]]:
         """
         Функция генерации временного ряда и значений. Используется в метриках.
 
@@ -159,18 +154,18 @@ class VictoriaMetricsClient:
 
     @allure.step("Импорт метрик tme_routes в VictoriaMetrics")
     def victoria_import_tme_routes_metric(
-        self,
-        metric_name: str,
-        start: datetime = datetime.now() - timedelta(minutes=60),
-        end: datetime = datetime.now(),
-        step: int = 60,
-        value: Union[int, float] = None,
-        min_value: int = 0,
-        max_value: int = 1000,
-        security: str = MetricRoutesSecurity.UNSAFE,
-        step_count: int = None,
-        risk_name: str = None,
-        delete_metrics_first: bool = True,
+            self,
+            metric_name: str,
+            start: datetime = datetime.now() - timedelta(minutes=60),
+            end: datetime = datetime.now(),
+            step: int = 60,
+            value: Union[int, float] = None,
+            min_value: int = 0,
+            max_value: int = 1000,
+            security: str = 'Unsafe',
+            step_count: int = None,
+            risk_name: str = None,
+            delete_metrics_first: bool = True,
     ) -> None:
 
         """
@@ -228,12 +223,30 @@ class VictoriaMetricsClient:
 
         if delete_metrics_first:
             self.victoria_delete_metric([data_for_delete])
-
-            HELPER.SEVERAL_ATTEMPTS(
-                20, f'Попытка проверить удаление метрик"',
-                self.victoria_get_metrics,
-                [data_for_delete],
-                condition=lambda response: not response['data']
-            )
+            self._ensure_metrics_deleted(data_for_delete)
 
         self.victoria_import(data)
+
+    def _ensure_metrics_deleted(self, metric: str) -> None:
+        RetryHelper(
+            max_retries=3,
+            delay=2.0,
+            retry_condition=lambda response: not response.get('data'),
+        ).execute(self.victoria_get_metrics, [metric])
+
+
+if __name__ == "__main__":
+    vm = VictoriaMetricsClient()
+    vm.victoria_import_tme_routes_metric(
+        metric_name='TestMetric',
+        start=datetime.now() - timedelta(hours=3),
+        end=datetime.now()
+    )
+
+    # vm.victoria_import_tme_routes_metric(
+    #     metric_name='TestMetric',
+    #     value=4,
+    #     start=datetime.now() - timedelta(hours=3),
+    #     end=datetime.now(),
+    #     delete_metrics_first=True
+    # )
