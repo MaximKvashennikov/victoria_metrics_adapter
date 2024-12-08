@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Union
 from src.config.settings import settings
 from src.helpers.retry_helper import RetryHelper
-from src.models.metric_models import MetricLabel, MetricData
+from src.models.metric_models import MetricLabel, MetricData, BaseMetricData
 
 
 class VictoriaMetricsClient:
@@ -92,9 +92,6 @@ class VictoriaMetricsClient:
         по умолчанию случайное в диапазоне min_value - max_value
         :param min_value: Минимальное значение диапазона рандомных значений
         :param max_value: Максимальное значение диапазона рандомных значений
-        :return: Кортеж из списков:
-        Список значений timestamps с типом int,
-        Список значений value с типом int или float.
         """
         current_time = start
         timestamps = []
@@ -109,6 +106,21 @@ class VictoriaMetricsClient:
             values = [value for _ in timestamps]
 
         return timestamps, values
+
+    @allure.step("Импорт конкретной метрики в VictoriaMetrics")
+    def victoria_import_concrete_metric(self, metric_data: BaseMetricData, delete_metrics_first: bool = True) -> None:
+        """
+        Функция импорта конкретной метрики в VictoriaMetrics.
+
+        :param metric_data: Объект MetricData, который содержит метрику и соответствующие значения.
+        :param delete_metrics_first: Флаг удаления старого временного ряда перед отправкой, по умолчанию True
+        :return: None.
+        """
+        if delete_metrics_first:
+            data_for_delete = f'{metric_data.metric.metric_name}'
+            self.victoria_delete_metric([data_for_delete])
+
+        self.victoria_import(metric_data.model_dump(by_alias=True, exclude_none=True))
 
     @allure.step("Импорт метрик tme_routes в VictoriaMetrics")
     def victoria_import_tme_routes_metric(
@@ -125,7 +137,6 @@ class VictoriaMetricsClient:
             risk_name: str = None,
             delete_metrics_first: bool = True,
     ) -> None:
-
         """
         Функция импорта сгенерированного временного ряда для определенной метрики.
 
@@ -138,8 +149,8 @@ class VictoriaMetricsClient:
         :param min_value: Минимальное значение диапазона рандомных значений
         :param max_value: Максимальное значение диапазона рандомных значений
         :param delete_metrics_first: Флаг удаления старого временного ряда перед отправкой, по умолчанию True
-        :param security:  Лейбл метрики, действие будет приизведено только над метриками с безопасностью security
-        :param step_count: Лейбл метрики, действие будет приизведено только над метриками для шага step_count,
+        :param security: Лейбл метрики, действие будет произведено только над метриками с безопасностью security
+        :param step_count: Лейбл метрики, действие будет произведено только над метриками для шага step_count,
         необходимо только для метрики TME_ROUTES_STEP_SECURITY
         :param risk_name: Лейбл метрики, необходимо только для метрики TME_ROUTES_RISK_SECURITY
         :return: None.
@@ -165,19 +176,8 @@ class VictoriaMetricsClient:
             timestamps=timestamps
         )
 
-        data_for_delete = f'{metric_name}{{security="{security}"}}'
+        self.victoria_import_concrete_metric(metric_data, delete_metrics_first=delete_metrics_first)
 
-        if step_count:
-            data_for_delete = f'{metric_name}{{security="{security}", step_count="{step_count}"}}'
-
-        if risk_name:
-            data_for_delete = f'{metric_name}{{security="{security}", risk_name="{risk_name}"}}'
-
-        if delete_metrics_first:
-            self.victoria_delete_metric([data_for_delete])
-
-        print(metric_data)
-        self.victoria_import(metric_data.model_dump(by_alias=True, exclude_none=True))
 
 
 if __name__ == "__main__":
@@ -185,12 +185,15 @@ if __name__ == "__main__":
     vm.victoria_delete_metric(['TestMetric'])
 
     vm.victoria_import_tme_routes_metric(
-        metric_name='TestMetric',
+        metric_name='TestMetric1',
         value=30,
-        step_count=6,
+        step_count=7,
         start=datetime.now() - timedelta(hours=3),
         end=datetime.now(),
         delete_metrics_first=True
     )
+    vm.victoria_import_tme_routes_metric(
+        metric_name='TestMetric2',
+    )
 
-    print(vm.get_metric_range_data(metrics=['TestMetric']))
+    print(vm.get_metric_range_data(metrics=['TestMetric1', 'TestMetric2']))

@@ -38,4 +38,3 @@ class MetricLabel(BaseMetricLabel):
 
 class MetricData(BaseMetricData):
     metric: MetricLabel
-
